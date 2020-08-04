@@ -79,8 +79,8 @@ class ChunkedUpload(models.Model):
 
     def delete_file(self):
         if self.file:
-            storage, path = self.file.storage, self.file.path
-            storage.delete(path)
+            storage, name = self.file.storage, self.file.name
+            storage.delete(name)
         self.file = None
 
     @transaction.atomic
@@ -118,17 +118,41 @@ class ChunkedUpload(models.Model):
 
     @transaction.atomic
     def completed(self, completed_at=timezone.now(), ext=COMPLETE_EXT):
+        storage = self.file.storage
+
         if ext != INCOMPLETE_EXT:
-            original_path = self.file.path
+            # If we're using `FileSystemStorage` then extract the original
+            # file path (absolute path on OS, not support on e.g. S3) for 
+            # later use. Otherwise extract the file name (relative path,
+            # supported on e.g. S3)
+            if isinstance(storage, FileSystemStorage):
+                original_path = self.file.path
+            else:
+                original_path = self.file.name
+
             self.file.name = os.path.splitext(self.file.name)[0] + ext
+
         self.status = self.COMPLETE
         self.completed_at = completed_at
         self.save()
+
         if ext != INCOMPLETE_EXT:
-            os.rename(
-                original_path,
-                os.path.splitext(self.file.path)[0] + ext,
-            )
+            # If we're using `FileSystemStorage` then we can simply rename
+            # the file on disk following our completion of the model being
+            # saved.
+            #
+            # Otherwise, `os.rename` is unlikely to be supported and we rely
+            # on a `rename` function being implemented in whichever storage
+            # backend is being used. *This will not work out of the box and
+            # requires a custom backend implementation to correctly rename
+            # the file, e.g. on S3*
+            if isinstance(storage, FileSystemStorage):
+                os.rename(
+                    original_path,
+                    os.path.splitext(self.file.path)[0] + ext,
+                )
+            else:
+                storage.rename(original_path, os.path.splitext(self.file.name)[0] + ext)
 
     class Meta:
         abstract = ABSTRACT_MODEL
