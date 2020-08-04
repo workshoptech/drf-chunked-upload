@@ -5,6 +5,7 @@ import uuid
 
 from django.db import models, transaction
 from django.conf import settings
+from django.core.files.storage import FileSystemStorage
 from django.core.files.uploadedfile import UploadedFile
 from django.utils import timezone
 
