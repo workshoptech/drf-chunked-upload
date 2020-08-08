@@ -8,50 +8,45 @@ from django.conf import settings
 from django.core.files.storage import FileSystemStorage
 from django.core.files.uploadedfile import UploadedFile
 from django.utils import timezone
+from django.utils.translation import ugettext_lazy as _
 
 from .settings import (
-    ABSTRACT_MODEL,
     CHECKSUM_TYPE,
     COMPLETE_EXT,
     EXPIRATION_DELTA,
     INCOMPLETE_EXT,
     STORAGE,
     UPLOAD_PATH,
+    UPLOAD_TO,
+    DEFAULT_MODEL_USER_FIELD_NULL,
+    DEFAULT_MODEL_USER_FIELD_BLANK
 )
 
-AUTH_USER_MODEL = getattr(settings, 'AUTH_USER_MODEL', 'auth.User')
 
-
-def generate_filename(instance, filename):
-    filename = os.path.join(instance.upload_dir, str(instance.id) + INCOMPLETE_EXT)
-    return time.strftime(filename)
-
-
-class ChunkedUpload(models.Model):
-    upload_dir = UPLOAD_PATH
+class AbstractChunkedUpload(models.Model):
+    """
+    Base chunked upload model. This model is abstract (doesn't create a table
+    in the database).
+    Inherit from this model to implement your own.
+    """
     UPLOADING = 1
     COMPLETE = 2
-    STATUS_CHOICES = (
-        (UPLOADING, 'Incomplete'),
-        (COMPLETE, 'Complete'),
+
+    CHUNKED_UPLOAD_CHOICES = (
+        (UPLOADING, _('Uploading')),
+        (COMPLETE, _('Complete')),
     )
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    file = models.FileField(max_length=255,
-                            upload_to=generate_filename,
-                            storage=STORAGE,
-                            null=True)
+
+    file = models.FileField(max_length=255, upload_to=UPLOAD_TO,
+                            storage=STORAGE)
     filename = models.CharField(max_length=255)
-    user = models.ForeignKey(AUTH_USER_MODEL,
-                             related_name="%(class)s",
-                             editable=False,
-                             on_delete=models.CASCADE)
     offset = models.BigIntegerField(default=0)
-    created_at = models.DateTimeField(auto_now_add=True,
-                                      editable=False)
-    status = models.PositiveSmallIntegerField(choices=STATUS_CHOICES,
+    created_at = models.DateTimeField(auto_now_add=True)
+    status = models.PositiveSmallIntegerField(choices=CHUNKED_UPLOAD_CHOICES,
                                               default=UPLOADING)
-    completed_at = models.DateTimeField(null=True,
-                                        blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
 
     @property
     def expires_at(self):
@@ -62,27 +57,23 @@ class ChunkedUpload(models.Model):
         return self.expires_at <= timezone.now()
 
     @property
-    def md5(self, rehash=False):
+    def md5(self):
         # method for backwards compatibility
-        return self.checksum(rehash)
+        return self.checksum
 
     @property
-    def checksum(self, rehash=False):
-        if getattr(self, '_checksum', None) is None or rehash is True:
+    def checksum(self):
+        if getattr(self, '_checksum', None) is None:
             h = hashlib.new(CHECKSUM_TYPE)
-            self.file.close()
-            self.file.open(mode='rb')
             for chunk in self.file.chunks():
                 h.update(chunk)
-                self._checksum = h.hexdigest()
-            self.file.close()
+            self._checksum = h.hexdigest()
         return self._checksum
 
     def delete_file(self):
         if self.file:
             storage, name = self.file.storage, self.file.name
             storage.delete(name)
-        self.file = None
 
     @transaction.atomic
     def delete(self, delete_file=True, *args, **kwargs): 
@@ -91,22 +82,27 @@ class ChunkedUpload(models.Model):
             self.delete_file()
             
 
-    def __unicode__(self):
-        return u'<%s - upload_id: %s - bytes: %s - status: %s>' % (
+    def __str__(self):
+        return u'<%s - id: %s - bytes: %s - status: %s>' % (
             self.filename, self.id, self.offset, self.status)
-
+    
     def append_chunk(self, chunk, chunk_size=None, save=True):
+        storage = self.file.storage
         self.file.close()
         self.file.open(mode='ab')  # mode = append+binary
-        for subchunk in chunk.chunks():
-            self.file.write(subchunk)
+
+        # for subchunk in chunk.chunks():
+        #     self.file.write(subchunk)
+
+        self.file.write(chunk.read())  # We can use .read() safely because chunk is already in memory
+
         if chunk_size is not None:
             self.offset += chunk_size
         elif hasattr(chunk, 'size'):
             self.offset += chunk.size
         else:
             self.offset = self.file.size
-        self._digest = None  # Clear cached md5
+        self._checksum = None  # Clear cached checksum
         if save:
             self.save()
         self.file.close()  # Flush
@@ -156,4 +152,17 @@ class ChunkedUpload(models.Model):
                 storage.rename(original_path, os.path.splitext(self.file.name)[0] + ext)
 
     class Meta:
-        abstract = ABSTRACT_MODEL
+        abstract = True
+
+
+class ChunkedUpload(AbstractChunkedUpload):
+    """
+    Default chunked upload model.
+    """
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='chunked_uploads',
+        null=DEFAULT_MODEL_USER_FIELD_NULL,
+        blank=DEFAULT_MODEL_USER_FIELD_BLANK
+    )

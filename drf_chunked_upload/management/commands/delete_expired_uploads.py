@@ -6,7 +6,7 @@ from six import iteritems
 import django.apps
 from django.core.management.base import BaseCommand
 from django.utils import timezone
-from django.utils.translation import ugettext as _
+from django.utils.translation import ugettext_lazy as _
 
 from drf_chunked_upload.settings import EXPIRATION_DELTA
 from drf_chunked_upload.models import ChunkedUpload

@@ -1,23 +1,16 @@
 import re
 
-from rest_framework.generics import GenericAPIView
-from rest_framework.response import Response
-from rest_framework.mixins import ListModelMixin, RetrieveModelMixin
-from rest_framework import status
-
 from django.shortcuts import get_object_or_404
-from django.core.files.base import ContentFile
 
-from .settings import MAX_BYTES, USER_RESTRICTED, CHECKSUM_TYPE
+from rest_framework import status
+from rest_framework.generics import GenericAPIView
+from rest_framework.mixins import ListModelMixin, RetrieveModelMixin
+from rest_framework.response import Response
+
+from .exceptions import ChunkedUploadError
 from .models import ChunkedUpload
 from .serializers import ChunkedUploadSerializer
-from .exceptions import ChunkedUploadError
-
-
-def is_authenticated(user):
-    if callable(user.is_authenticated):
-        return user.is_authenticated()
-    return user.is_authenticated
+from .settings import CHECKSUM_TYPE, MAX_BYTES, USER_RESTRICTED
 
 
 class ChunkedUploadBaseView(GenericAPIView):
@@ -40,16 +33,9 @@ class ChunkedUploadBaseView(GenericAPIView):
         """
         queryset = self.model.objects.all()
         if USER_RESTRICTED:
-            if is_authenticated(self.request.user):
+            if self.request.user.is_authenticated:
                 queryset = queryset.filter(user=self.request.user)
         return queryset
-
-    def get_response_data(self, chunked_upload, request):
-        """
-        Data for the response. Should return a dictionary-like object.
-        Called *only* if POST is successful.
-        """
-        return {}
 
     def _post(self, request, pk=None, *args, **kwargs):
         raise NotImplementedError
@@ -92,17 +78,23 @@ class ChunkedUploadView(ListModelMixin, RetrieveModelMixin,
                         ChunkedUploadBaseView):
     """
     Uploads large files in multiple chunks. Also, has the ability to resume
-    if the upload is interrupted. PUT without upload ID to create an upload
-    and POST to complete the upload. POST with a complete file to upload a
-    whole file in one go. Method `on_completion` is a placeholder to
-    define what to do when upload is complete.
+    if the upload is interrupted.
+    
+    PUT without upload ID to create an upload
+    
+    POST to complete the upload.
+    
+    POST with a complete file to upload a whole file in one go. Method `on_completion` 
+    is a placeholder to define what to do when upload is complete.
     """
 
     # I wouldn't recommend to turn off the checksum check, unless is really
     # impacting your performance. Proceed at your own risk.
+    # TODO: - Remove?
     do_checksum_check = True
 
     field_name = 'file'
+    content_range_header = 'HTTP_CONTENT_RANGE'
     content_range_pattern = re.compile(
         r'^bytes (?P<start>\d+)-(?P<end>\d+)/(?P<total>\d+)$'
     )
@@ -123,16 +115,6 @@ class ChunkedUploadView(ListModelMixin, RetrieveModelMixin,
 
         return self.max_bytes
 
-    def create_chunked_upload(self, save=False, **attrs):
-        """
-        Creates new chunked upload instance. Called if no 'id' is
-        found in the POST data.
-        """
-        chunked_upload = self.model(**attrs)
-        # file starts empty
-        chunked_upload.file.save(name='', content=ContentFile(''), save=save)
-        return chunked_upload
-
     def is_valid_chunked_upload(self, chunked_upload):
         """
         Check if chunked upload has already expired or is already complete.
@@ -140,24 +122,28 @@ class ChunkedUploadView(ListModelMixin, RetrieveModelMixin,
         if chunked_upload.expired:
             raise ChunkedUploadError(status=status.HTTP_410_GONE,
                                      detail='Upload has expired')
-        error_msg = 'Upload has already been marked as "%s"'
+
         if chunked_upload.status == chunked_upload.COMPLETE:
+            error_msg = 'Upload has already been marked as "%s"'
             raise ChunkedUploadError(status=status.HTTP_400_BAD_REQUEST,
                                      detail=error_msg % 'complete')
 
-    def _put_chunk(self, request, pk=None, whole=False, *args, **kwargs):
+    def _put_chunk(self, request, upload_id=None, whole=False, *args, **kwargs):
         try:
             chunk = request.data[self.field_name]
         except KeyError:
             raise ChunkedUploadError(status=status.HTTP_400_BAD_REQUEST,
                                      detail='No chunk file was submitted')
 
+        content_range = request.META.get(self.content_range_header, '')
+        print('content range', content_range, whole)
+
         if whole:
             start = 0
             total = chunk.size
             end = total - 1
         else:
-            content_range = request.META.get('HTTP_CONTENT_RANGE', '')
+            content_range = request.META.get(self.content_range_header, '')
             match = self.content_range_pattern.match(content_range)
             if not match:
                 raise ChunkedUploadError(status=status.HTTP_400_BAD_REQUEST,
@@ -180,31 +166,43 @@ class ChunkedUploadView(ListModelMixin, RetrieveModelMixin,
             raise ChunkedUploadError(status=status.HTTP_400_BAD_REQUEST,
                                      detail="File size doesn't match headers: file size is {} but {} reported".format(chunk.size, chunk_size))
 
-        if pk:
-            upload_id = pk
+        # If a `upload_id` is present, then we know we're updating an existing chunked upload
+        #
+        # If not, then pass the request data to the serializer to create a new chunked upload
+        # object on save of the serializer.
+        if upload_id:
             chunked_upload = get_object_or_404(self.get_queryset(),
                                                pk=upload_id)
+
+            # Check the chunked upload is valid to be updated, and check that the stated
+            # content range start matches the existing offset of the upload
             self.is_valid_chunked_upload(chunked_upload)
+
             if chunked_upload.offset != start:
                 raise ChunkedUploadError(status=status.HTTP_400_BAD_REQUEST,
                                          detail='Offsets do not match',
                                          offset=chunked_upload.offset)
 
+            # Append the the chunk to the upload
             chunked_upload.append_chunk(chunk, chunk_size=chunk_size)
         else:
-            user = request.user if is_authenticated(request.user) else None
-            chunked_upload = self.serializer_class(data=request.data)
-            if not chunked_upload.is_valid():
+            user = request.user if request.user.is_authenticated else None
+
+            serializer = self.serializer_class(data=request.data)
+
+            if not serializer.is_valid():
                 raise ChunkedUploadError(status=status.HTTP_400_BAD_REQUEST,
-                                         detail=chunked_upload.errors)
-            # chunked_upload is currently a serializer;
-            # save returns model instance
-            chunked_upload = chunked_upload.save(user=user, offset=chunk.size)
+                                         detail=serializer.errors)
+
+            # Create the chunked upload, saving the provided `file` in the request
+            # data to the chunked upload as the initial file/chunk                 
+            chunked_upload = serializer.save(user=user, offset=chunk.size)
 
         return chunked_upload
 
     def _put(self, request, pk=None, *args, **kwargs):
-        chunked_upload = self._put_chunk(request, pk=pk, *args, **kwargs)
+        chunked_upload = self._put_chunk(request, upload_id=pk, *args, **kwargs)
+
         return Response(
             self.response_serializer_class(chunked_upload,
                                            context={'request': request}).data,
@@ -221,11 +219,14 @@ class ChunkedUploadView(ListModelMixin, RetrieveModelMixin,
 
     def _post(self, request, pk=None, *args, **kwargs):
         chunked_upload = None
+
+        # A POST request will be made in either of the following scenarios:
+        # - Uploading a file as a single chunk (no pk will exist)
+        # - Finalising a chunked upload (pk will exist)
         if pk:
             upload_id = pk
         else:
-            chunked_upload = self._put_chunk(request, *args,
-                                             whole=True, **kwargs)
+            chunked_upload = self._put_chunk(request, whole=True, *args, **kwargs)
             upload_id = chunked_upload.id
 
         checksum = request.data.get(CHECKSUM_TYPE)
@@ -241,6 +242,8 @@ class ChunkedUploadView(ListModelMixin, RetrieveModelMixin,
             raise ChunkedUploadError(status=status.HTTP_400_BAD_REQUEST,
                                      detail=error_msg)
 
+        # If we're finalising a chunked upload, retrieve the chunked upload
+        # instance for the given id.
         if not chunked_upload:
             chunked_upload = get_object_or_404(self.get_queryset(),
                                                pk=upload_id)
@@ -253,6 +256,7 @@ class ChunkedUploadView(ListModelMixin, RetrieveModelMixin,
         chunked_upload.completed()
 
         self.on_completion(chunked_upload, request)
+
         return Response(
             self.response_serializer_class(chunked_upload,
                                            context={'request': request}).data,

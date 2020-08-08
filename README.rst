@@ -116,12 +116,16 @@ Add any of these variables into your project settings to override them.
 -  Path where uploaded files will be stored.
 -  Default: ``'chunked_uploads/%Y/%m/%d'``
 
+``DRF_CHUNKED_UPLOAD_TO``
+
+-  `upload_to` to be used in the Model's FileField.
+-  Default: ``DRF_CHUNKED_UPLOAD_PATH + '/{{ instance.upload_id }}.part'``
+
 ``DRF_CHUNKED_UPLOAD_CHECKSUM``
 
 - The type of checksum to use when verifying checksums. Options include anything
   supported by Python's hashlib (md5, sha1, sha256, etc)
 - Default: ``'md5'``
-
 
 ``DRF_CHUNKED_UPLOAD_COMPLETE_EXT``
 
@@ -146,18 +150,16 @@ Add any of these variables into your project settings to override them.
    can view/continue an upload.
 -  Default: ``True``
 
-``DRF_CHUNKED_UPLOAD_ABSTRACT_MODEL``
-
--  Boolean that defines if the ``ChunkedUpload`` model will be abstract
-   or not (`what does abstract model
-   mean? <https://docs.djangoproject.com/en/1.4/ref/models/options/#abstract>`__).
--  Default: ``True``
-
 ``DRF_CHUNKED_UPLOAD_MAX_BYTES``
 
 -  Max amount of data (in bytes) that can be uploaded. ``None`` means no
    limit.
 -  Default: ``None``
+
+``DRF_CHUNKED_UPLOAD_NAMED_URL``
+
+-  The URL name used to generate the full URL of in progress uploads
+-  Default: ``'chunkedupload-detail'``
 
 Support
 -------
