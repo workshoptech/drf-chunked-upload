@@ -91,12 +91,15 @@ class AbstractChunkedUpload(models.Model):
         )
 
     def append_chunk(self, chunk, chunk_size=None, save=True):
+        storage = self.file.storage
+
         # Create a temporary file that will write to disk after a specified
         # size. This file will be automatically deleted when closed by
         # after exiting the `with` statement
         with SpooledTemporaryFile() as content_autoclose:
 
             # Write our existing content to our temporary copy
+            self.file.close()
             content_autoclose.write(self.file.read())
             # Append the latest chunk
             content_autoclose.write(chunk.read())
@@ -105,11 +108,12 @@ class AbstractChunkedUpload(models.Model):
             # Re-write our existing file with the contents of our temporary
             # copy - this accounts for storage systems which don't allow us
             # to simply append our chunk onto the existing file, e.g. AWS S3
-            self.file.close()
-            self.file.open(mode="wb")
-            self.file.write(content_autoclose.read())
+            writable_file = storage.open(self.file.name, mode="wb")
+            writable_file.write(content_autoclose.read())
 
+            # Flush temporary files
             content_autoclose.close()
+            writable_file.close()
 
         if chunk_size is not None:
             self.offset += chunk_size
