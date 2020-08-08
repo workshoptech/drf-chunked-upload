@@ -9,11 +9,11 @@ class ChunkedUploadSerializer(serializers.ModelSerializer):
     url = serializers.SerializerMethodField()
 
     def get_url(self, obj):
-        return reverse(NAMED_URL,
-                       kwargs={'pk': obj.id},
-                       request=self.context['request'])
+        return reverse(
+            NAMED_URL, kwargs={"pk": obj.id}, request=self.context["request"]
+        )
 
     class Meta:
         model = ChunkedUpload
-        fields = '__all__'
-        read_only_fields = ('status', 'completed_at')
+        fields = "__all__"
+        read_only_fields = ("status", "completed_at")
