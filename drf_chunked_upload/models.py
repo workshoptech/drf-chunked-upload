@@ -1,11 +1,12 @@
 import hashlib
-import os.path
+import os
 import time
 import uuid
+from tempfile import SpooledTemporaryFile
 
 from django.conf import settings
 from django.core.files.storage import FileSystemStorage
-from django.core.files.uploadedfile import UploadedFile
+from django.core.files.uploadedfile import TemporaryUploadedFile, UploadedFile
 from django.db import models, transaction
 from django.utils import timezone
 from django.utils.translation import ugettext_lazy as _
@@ -18,7 +19,6 @@ from .settings import (
     EXPIRATION_DELTA,
     INCOMPLETE_EXT,
     STORAGE,
-    UPLOAD_PATH,
     UPLOAD_TO,
 )
 
@@ -91,16 +91,25 @@ class AbstractChunkedUpload(models.Model):
         )
 
     def append_chunk(self, chunk, chunk_size=None, save=True):
-        storage = self.file.storage
-        self.file.close()
-        self.file.open(mode="ab")  # mode = append+binary
+        # Create a temporary file that will write to disk after a specified
+        # size. This file will be automatically deleted when closed by
+        # after exiting the `with` statement
+        with SpooledTemporaryFile() as content_autoclose:
 
-        # for subchunk in chunk.chunks():
-        #     self.file.write(subchunk)
+            # Write our existing content to our temporary copy
+            content_autoclose.write(self.file.read())
+            # Append the latest chunk
+            content_autoclose.write(chunk.read())
+            content_autoclose.seek(0)
 
-        self.file.write(
-            chunk.read()
-        )  # We can use .read() safely because chunk is already in memory
+            # Re-write our existing file with the contents of our temporary
+            # copy - this accounts for storage systems which don't allow us
+            # to simply append our chunk onto the existing file, e.g. AWS S3
+            self.file.close()
+            self.file.open(mode="wb")
+            self.file.write(content_autoclose.read())
+
+            content_autoclose.close()
 
         if chunk_size is not None:
             self.offset += chunk_size
@@ -109,9 +118,12 @@ class AbstractChunkedUpload(models.Model):
         else:
             self.offset = self.file.size
         self._checksum = None  # Clear cached checksum
+
         if save:
             self.save()
-        self.file.close()  # Flush
+
+        # Flush
+        self.file.close()
 
     def get_uploaded_file(self):
         self.file.close()

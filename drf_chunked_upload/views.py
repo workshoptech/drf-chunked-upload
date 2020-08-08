@@ -138,7 +138,6 @@ class ChunkedUploadView(ListModelMixin, RetrieveModelMixin, ChunkedUploadBaseVie
             )
 
         content_range = request.META.get(self.content_range_header, "")
-        print("content range", content_range, whole)
 
         if whole:
             start = 0
