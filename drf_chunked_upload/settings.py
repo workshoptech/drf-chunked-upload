@@ -16,7 +16,6 @@ DEFAULT_UPLOAD_PATH = "chunked_uploads/%Y/%m/%d"
 UPLOAD_PATH = getattr(settings, "DRF_CHUNKED_UPLOAD_PATH", DEFAULT_UPLOAD_PATH)
 
 # File extensions for upload files
-COMPLETE_EXT = getattr(settings, "DRF_CHUNKED_UPLOAD_COMPLETE_EXT", ".done")
 INCOMPLETE_EXT = getattr(settings, "DRF_CHUNKED_UPLOAD_INCOMPLETE_EXT", ".part")
 
 # upload_to function to be used in the FileField

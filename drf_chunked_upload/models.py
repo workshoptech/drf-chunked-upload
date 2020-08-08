@@ -13,7 +13,6 @@ from django.utils.translation import ugettext_lazy as _
 
 from .settings import (
     CHECKSUM_TYPE,
-    COMPLETE_EXT,
     DEFAULT_MODEL_USER_FIELD_BLANK,
     DEFAULT_MODEL_USER_FIELD_NULL,
     EXPIRATION_DELTA,
@@ -135,41 +134,43 @@ class AbstractChunkedUpload(models.Model):
         return UploadedFile(file=self.file, name=self.filename, size=self.offset)
 
     @transaction.atomic
-    def completed(self, completed_at=timezone.now(), ext=COMPLETE_EXT):
+    def completed(self, completed_at=timezone.now()):
         storage = self.file.storage
 
-        if ext != INCOMPLETE_EXT:
-            # If we're using `FileSystemStorage` then extract the original
-            # file path (absolute path on OS, not support on e.g. S3) for
-            # later use. Otherwise extract the file name (relative path,
-            # supported on e.g. S3)
-            if isinstance(storage, FileSystemStorage):
-                original_path = self.file.path
-            else:
-                original_path = self.file.name
+        filename_ext = os.path.splitext(self.filename)[-1][1:]
 
-            self.file.name = os.path.splitext(self.file.name)[0] + ext
+        # If we're using `FileSystemStorage` then extract the original
+        # file path (absolute path on OS, not support on e.g. S3) for
+        # later use. Otherwise extract the file name (relative path,
+        # supported on e.g. S3)
+        if isinstance(storage, FileSystemStorage):
+            original_path = self.file.path
+        else:
+            original_path = self.file.name
+
+        self.file.name = os.path.splitext(self.file.name)[0] + filename_ext
 
         self.status = self.COMPLETE
         self.completed_at = completed_at
         self.save()
 
-        if ext != INCOMPLETE_EXT:
-            # If we're using `FileSystemStorage` then we can simply rename
-            # the file on disk following our completion of the model being
-            # saved.
-            #
-            # Otherwise, `os.rename` is unlikely to be supported and we rely
-            # on a `rename` function being implemented in whichever storage
-            # backend is being used. *This will not work out of the box and
-            # requires a custom backend implementation to correctly rename
-            # the file, e.g. on S3*
-            if isinstance(storage, FileSystemStorage):
-                os.rename(
-                    original_path, os.path.splitext(self.file.path)[0] + ext,
-                )
-            else:
-                storage.rename(original_path, os.path.splitext(self.file.name)[0] + ext)
+        # If we're using `FileSystemStorage` then we can simply rename
+        # the file on disk following our completion of the model being
+        # saved.
+        #
+        # Otherwise, `os.rename` is unlikely to be supported and we rely
+        # on a `rename` function being implemented in whichever storage
+        # backend is being used. *This will not work out of the box and
+        # requires a custom backend implementation to correctly rename
+        # the file, e.g. on S3*
+        if isinstance(storage, FileSystemStorage):
+            os.rename(
+                original_path, os.path.splitext(self.file.path)[0] + filename_ext,
+            )
+        else:
+            storage.rename(
+                original_path, os.path.splitext(self.file.name)[0] + filename_ext
+            )
 
     class Meta:
         abstract = True
