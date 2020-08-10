@@ -140,7 +140,7 @@ class AbstractChunkedUpload(models.Model):
     def completed(self, completed_at=timezone.now()):
         storage = self.file.storage
 
-        filename_ext = os.path.splitext(self.filename)[-1][1:]
+        filename_ext = os.path.splitext(self.filename)[-1]
 
         # If we're using `FileSystemStorage` then extract the original
         # file path (absolute path on OS, not support on e.g. S3) for
